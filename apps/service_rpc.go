@@ -284,7 +284,7 @@ func (srv *AppService) safeHandleInfo(request rpc.RemoteRequest) {
 	}
 
 	for _, v := range app.Vars {
-		if v.Secret {
+		if v.Secret && v.Value != "" {
 			v.Value = "<secret>"
 		}
 	}
