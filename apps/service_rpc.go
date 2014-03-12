@@ -448,12 +448,18 @@ func (srv *AppService) safeHandleStart(request rpc.RemoteRequest) {
 		return
 	}
 
+	if args.Watch {
+		go srv.watchApp(args.Alias, logging.LevelUnset, request)
+	}
+
 	if err := srv.supervisor.Start(&app, request); err != nil {
 		request.Resolve(8, data.StartReply{Error: err.Error()})
 		return
 	}
 
-	request.Resolve(0, data.StartReply{})
+	if !args.Watch {
+		request.Resolve(0, data.StartReply{})
+	}
 }
 
 // Stop ------------------------------------------------------------------------
@@ -592,28 +598,30 @@ func (srv *AppService) safeHandleWatch(request rpc.RemoteRequest) {
 		return
 	}
 
-	// XXX: if someone stops the app while someone else is watching, the logs
-	// just stop streaming. That could be improved.
-	go func() {
-		color.Fprintf(request.Stdout(), "@{c}>>>@{|} Streaming logs for application %s\n", args.Alias)
-		handle, err := srv.logs.Subscribe(args.Alias, logging.Level(args.Level),
-			func(level logging.Level, record []byte) {
-				fmt.Fprintf(request.Stdout(), "[%v] %s", level, string(record))
-			})
-		if err != nil {
-			request.Resolve(7, data.WatchReply{Error: err.Error()})
-			return
-		}
+	go srv.watchApp(args.Alias, logging.Level(args.Level), request)
+}
 
-		<-request.Interrupted()
+// XXX: If someone stops the app while someone else is watching,
+//      the logs just stop streaming. That could be improved.
+func (srv *AppService) watchApp(alias string, level logging.Level, request rpc.RemoteRequest) {
+	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Streaming logs for application %s\n", alias)
+	handle, err := srv.logs.Subscribe(alias, level,
+		func(level logging.Level, record []byte) {
+			fmt.Fprintf(request.Stdout(), "[%v] %s", level, string(record))
+		})
+	if err != nil {
+		request.Resolve(9, data.WatchReply{Error: err.Error()})
+		return
+	}
 
-		if err := srv.logs.Unsubscribe(handle); err != nil {
-			request.Resolve(8, data.WatchReply{Error: err.Error()})
-			return
-		}
+	<-request.Interrupted()
 
-		request.Resolve(0, data.WatchReply{})
-	}()
+	if err := srv.logs.Unsubscribe(handle); err != nil {
+		request.Resolve(10, data.WatchReply{Error: err.Error()})
+		return
+	}
+
+	request.Resolve(0, data.WatchReply{})
 }
 
 // Helpers

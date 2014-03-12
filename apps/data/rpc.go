@@ -108,6 +108,7 @@ type UnsetReply struct {
 type StartArgs struct {
 	Token []byte `codec:"token"`
 	Alias string `codec:"alias"`
+	Watch bool   `codec:"watch,omitempty"`
 }
 
 type StartReply struct {
