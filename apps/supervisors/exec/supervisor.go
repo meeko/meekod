@@ -76,8 +76,8 @@ func (supervisor *Supervisor) getOrCreateRecord(alias string) *appRecord {
 // apps.Supervisor interface ---------------------------------------------------
 
 func (supervisor *Supervisor) Install(alias string, repo string, ctx apps.ActionContext) (*data.App, error) {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	repoURL, err := url.Parse(repo)
 	if err != nil {
@@ -167,8 +167,8 @@ func (supervisor *Supervisor) Upgrade(app *data.App, ctx apps.ActionContext) err
 	mustHaveAlias(app)
 	mustHaveRepository(app)
 
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	repoURL, err := url.Parse(app.Repository)
 	if err != nil {
@@ -216,8 +216,8 @@ func (supervisor *Supervisor) Upgrade(app *data.App, ctx apps.ActionContext) err
 func (supervisor *Supervisor) Remove(app *data.App, ctx apps.ActionContext) error {
 	mustHaveAlias(app)
 
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	// The app must not be running.
 	record, ok := supervisor.records[app.Alias]
@@ -239,8 +239,8 @@ func (supervisor *Supervisor) Remove(app *data.App, ctx apps.ActionContext) erro
 }
 
 func (supervisor *Supervisor) Start(app *data.App, ctx apps.ActionContext) error {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 	return supervisor.unsafeStart(app, ctx)
 }
 
@@ -319,43 +319,36 @@ func (supervisor *Supervisor) unsafeStart(app *data.App, ctx apps.ActionContext)
 }
 
 func (supervisor *Supervisor) Stop(alias string, ctx apps.ActionContext) error {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	return supervisor.unsafeStop(alias, ctx)
+}
+
+func (supervisor *Supervisor) StopWithin(alias string, ctx apps.ActionContext, timeout time.Duration) error {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 	return supervisor.unsafeStop(alias, ctx)
 }
 
 func (supervisor *Supervisor) unsafeStop(alias string, ctx apps.ActionContext) error {
-	return supervisor.stopAppWithin(-1, alias, ctx.Interrupted())
+	return supervisor.stopAppWithin(-1, alias, ctx)
 }
 
 func (supervisor *Supervisor) StopWithTimeout(alias string, ctx apps.ActionContext, timeout time.Duration) error {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
-
-	fmt.Fprintf(ctx.Stdout(), "Stopping application %s", alias)
-	if err := supervisor.stopAppWithin(timeout, alias, ctx.Interrupted()); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(ctx.Stdout(), "Application %s stopped", alias)
-	return nil
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	return supervisor.stopAppWithin(timeout, alias, ctx)
 }
 
 func (supervisor *Supervisor) Kill(alias string, ctx apps.ActionContext) error {
-	fmt.Fprintf(ctx.Stdout(), "Killing application %s", alias)
-	if err := supervisor.StopWithTimeout(alias, ctx, 0); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(ctx.Stdout(), "Application %s killed", alias)
-	return nil
+	return supervisor.StopWithTimeout(alias, ctx, 0)
 }
 
 func (supervisor *Supervisor) Restart(app *data.App, ctx apps.ActionContext) error {
 	mustHaveAlias(app)
 
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	if err := supervisor.unsafeStop(app.Alias, ctx); err != nil {
 		return err
@@ -365,8 +358,8 @@ func (supervisor *Supervisor) Restart(app *data.App, ctx apps.ActionContext) err
 }
 
 func (supervisor *Supervisor) Status(alias string, ctx apps.ActionContext) (status string, err error) {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	record, ok := supervisor.records[alias]
 	if !ok {
@@ -379,8 +372,8 @@ func (supervisor *Supervisor) Status(alias string, ctx apps.ActionContext) (stat
 }
 
 func (supervisor *Supervisor) Statuses(ctx apps.ActionContext) (statuses map[string]string, err error) {
-	supervisor.lock(ctx)
-	defer supervisor.unlock()
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
 
 	statuses = make(map[string]string, len(supervisor.records))
 	for k, v := range supervisor.records {
@@ -423,14 +416,6 @@ func (supervisor *Supervisor) Terminate(timeout time.Duration) {
 
 // Private methods -------------------------------------------------------------
 
-func (supervisor *Supervisor) lock(ctx apps.ActionContext) {
-	supervisor.mu.Lock()
-}
-
-func (supervisor *Supervisor) unlock() {
-	supervisor.mu.Unlock()
-}
-
 func (supervisor *Supervisor) runHook(app *data.App, hook string, ctx apps.ActionContext) error {
 	var (
 		appDir    = supervisor.appDir(app.Alias)
@@ -457,7 +442,7 @@ func (supervisor *Supervisor) runHook(app *data.App, hook string, ctx apps.Actio
 	return executil.Run(cmd, ctx.Interrupted())
 }
 
-func (supervisor *Supervisor) stopAppWithin(timeout time.Duration, alias string, interrupt <-chan struct{}) error {
+func (supervisor *Supervisor) stopAppWithin(timeout time.Duration, alias string, ctx apps.ActionContext) error {
 	record, ok := supervisor.records[alias]
 	if !ok {
 		return apps.ErrUnknownAlias
@@ -468,16 +453,19 @@ func (supervisor *Supervisor) stopAppWithin(timeout time.Duration, alias string,
 
 	// Timeout == 0 --> SIGKILL
 	if timeout == 0 {
+		fmt.Fprintf(ctx.Stdout(), "Killing application %s...\n", alias)
 		if err := record.process.Signal(os.Kill); err != nil {
 			return err
 		}
 		supervisor.mu.Unlock()
 		<-record.termCh
 		supervisor.mu.Lock()
+		fmt.Fprintf(ctx.Stdout(), "Application %s killed\n", alias)
 		return nil
 	}
 
 	// Timeout != 0 --> SIGINT and wait for timeout
+	fmt.Fprintf(ctx.Stdout(), "Stopping application %s...\n", alias)
 	if err := record.process.Signal(os.Interrupt); err != nil {
 		return err
 	}
@@ -492,18 +480,22 @@ func (supervisor *Supervisor) stopAppWithin(timeout time.Duration, alias string,
 
 	select {
 	case <-record.termCh:
-	case <-interrupt:
+		fmt.Fprintf(ctx.Stdout(), "Application %s stopped\n", alias)
+	case <-ctx.Interrupted():
 		return apps.ErrInterrupted
 	case <-timeoutCh:
 		supervisor.mu.Lock()
+		fmt.Fprintf(ctx.Stdout(), "Killing application %s...\n", alias)
 		if err := record.process.Signal(os.Kill); err != nil {
+			supervisor.mu.Unlock()
 			return err
 		}
-
 		supervisor.mu.Unlock()
+
 		select {
 		case <-record.termCh:
-		case <-interrupt:
+			fmt.Fprintf(ctx.Stdout(), "Application %s killed\n", alias)
+		case <-ctx.Interrupted():
 			return apps.ErrInterrupted
 		}
 	}

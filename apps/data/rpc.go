@@ -6,6 +6,7 @@
 package data
 
 //import "github.com/cider/cider/broker/services/logging"
+import "time"
 
 // List ------------------------------------------------------------------------
 
@@ -129,8 +130,9 @@ type RestartReply struct {
 // Stop ------------------------------------------------------------------------
 
 type StopArgs struct {
-	Token []byte `codec:"token"`
-	Alias string `codec:"alias"`
+	Token   []byte        `codec:"token"`
+	Alias   string        `codec:"alias"`
+	Timeout time.Duration `codec:"timeout"`
 }
 
 type StopReply struct {

@@ -480,7 +480,7 @@ func (srv *AppService) safeHandleStop(request rpc.RemoteRequest) {
 		return
 	}
 
-	if err := srv.supervisor.Stop(args.Alias, request); err != nil {
+	if err := srv.supervisor.StopWithTimeout(args.Alias, request, args.Timeout); err != nil {
 		request.Resolve(5, data.StopReply{Error: err.Error()})
 		return
 	}
