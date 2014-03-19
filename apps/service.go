@@ -139,7 +139,7 @@ func (factory *AppServiceFactory) NewAppService(supervisor Supervisor, logs *log
 
 	// Try to start apps that are supposed to be running.
 	var app data.App
-	ctx := newNilActionContext()
+	ctx := NewNilActionContext()
 	iter := apps.Find(nil).Iter()
 	for iter.Next(&app) {
 		if app.Enabled {
@@ -181,7 +181,7 @@ func (srv *AppService) Terminated() <-chan struct{} {
 
 type nilActionContext struct{}
 
-func newNilActionContext() ActionContext {
+func NewNilActionContext() ActionContext {
 	return &nilActionContext{}
 }
 

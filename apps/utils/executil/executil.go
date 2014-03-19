@@ -6,17 +6,11 @@
 package executil
 
 import (
-	"os"
 	"os/exec"
-	//"syscall"
 	"time"
 )
 
 func Run(cmd *exec.Cmd, interrupted <-chan struct{}) error {
-	//var attr syscall.SysProcAttr
-	//attr.Noctty = true
-	//cmd.SysProcAttr = &attr
-
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -30,15 +24,15 @@ func Run(cmd *exec.Cmd, interrupted <-chan struct{}) error {
 	case err := <-errCh:
 		return err
 	case <-interrupted:
-		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		if err := cmd.Process.Signal(termSignal); err != nil {
 			return err
 		}
 
 		select {
 		case err := <-errCh:
 			return err
-		case <-time.After(3 * time.Second):
-			if err := cmd.Process.Signal(os.Kill); err != nil {
+		case <-time.After(5 * time.Second):
+			if err := cmd.Process.Signal(killSignal); err != nil {
 				return err
 			}
 

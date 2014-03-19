@@ -260,7 +260,7 @@ func (b *Broker) Terminate() {
 	defer b.mu.Unlock()
 	b.ensureState(stateServing)
 
-	log.Info("[broker] Terminating ...")
+	log.Info("[broker] Terminating...")
 	close(b.termCh)
 
 	b.state = stateTerminated

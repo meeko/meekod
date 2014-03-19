@@ -607,7 +607,7 @@ func (srv *AppService) watchApp(alias string, level logging.Level, request rpc.R
 	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Streaming logs for application %s\n", alias)
 	handle, err := srv.logs.Subscribe(alias, level,
 		func(level logging.Level, record []byte) {
-			fmt.Fprintf(request.Stdout(), "[%v] %s", level, string(record))
+			fmt.Fprintf(request.Stdout(), "[%v] %s\n", level, string(record))
 		})
 	if err != nil {
 		request.Resolve(9, data.WatchReply{Error: err.Error()})

@@ -35,10 +35,11 @@ func (vcs *gitVCS) Clone(repoURL *url.URL, srcDir string, ctx apps.ActionContext
 	buf.WriteString(repoURL.Path)
 
 	// Assemble git flags and arguments.
-	args := []string{"clone"}
-	if repoURL.Fragment != "" {
-		args = append(args, "--branch", repoURL.Fragment, "--single-branch")
+	branch := repoURL.Fragment
+	if branch == "" {
+		branch = "master"
 	}
+	args := []string{"clone", "--branch", branch, "--single-branch"}
 	args = append(args, buf.String(), srcDir)
 
 	// Initialise the command.
@@ -50,13 +51,37 @@ func (vcs *gitVCS) Clone(repoURL *url.URL, srcDir string, ctx apps.ActionContext
 	return executil.Run(cmd, ctx.Interrupted())
 }
 
-func (vcs *gitVCS) Pull(repo *url.URL, srcDir string, ctx apps.ActionContext) error {
-	// Initialise the command.
-	cmd := exec.Command("git", "pull")
-	cmd.Dir = srcDir
-	cmd.Stderr = ctx.Stderr()
-	cmd.Stdout = ctx.Stdout()
+func (vcs *gitVCS) Pull(repoURL *url.URL, srcDir string, ctx apps.ActionContext) error {
+	branch := repoURL.Fragment
+	if branch == "" {
+		branch = "master"
+	}
 
-	// Run the command.
+	// Fetch
+	cmd := exec.Command("git", "fetch", "origin", branch)
+	cmd.Dir = srcDir
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+
+	if err := executil.Run(cmd, ctx.Interrupted()); err != nil {
+		return err
+	}
+
+	// Checkout
+	cmd = exec.Command("git", "checkout", branch)
+	cmd.Dir = srcDir
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+
+	if err := executil.Run(cmd, ctx.Interrupted()); err != nil {
+		return err
+	}
+
+	// Merge
+	cmd = exec.Command("git", "merge", "origin/"+branch)
+	cmd.Dir = srcDir
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+
 	return executil.Run(cmd, ctx.Interrupted())
 }

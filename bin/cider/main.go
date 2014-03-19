@@ -7,12 +7,15 @@ package main
 
 import (
 	// Stdlib
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	// Cider broker
 	"github.com/cider/cider/broker"
@@ -20,6 +23,7 @@ import (
 	"github.com/cider/cider/broker/exchanges/pubsub/eventbus"
 	"github.com/cider/cider/broker/exchanges/rpc/roundrobin"
 	ciderLog "github.com/cider/cider/broker/log"
+	wsrpc "github.com/cider/cider/broker/transports/websocket/rpc"
 	zlogging "github.com/cider/cider/broker/transports/zmq3/logging"
 	zpubsub "github.com/cider/cider/broker/transports/zmq3/pubsub"
 	zrpc "github.com/cider/cider/broker/transports/zmq3/rpc"
@@ -33,10 +37,13 @@ import (
 	"github.com/cider/cider/apps/supervisors/exec"
 
 	// Others
+	ws "code.google.com/p/go.net/websocket"
 	"github.com/cihub/seelog"
 	_ "github.com/joho/godotenv/autoload" // Load .env on init.
 	zmq "github.com/pebbe/zmq3"
 )
+
+const AppsKillTimeout = 5 * time.Second
 
 func main() {
 	if err := _main(); err != nil {
@@ -55,6 +62,7 @@ func _main() error {
 	enableZmq3RPC := flag.Bool("enable_rpc_zmq3", true, "enable RPC service over ZeromMQ 3.x")
 	enableZmq3PubSub := flag.Bool("enable_pubsub_zmq3", true, "enable PubSub service over ZeromMQ 3.x")
 	enableZmq3Logging := flag.Bool("enable_logging_zmq3", true, "enable Logging service over ZeromMQ 3.x")
+	enableWSRPC := flag.Bool("enable_rpc_ws", false, "enable RPC service over WebSocket")
 	verbose := flag.Bool("v", false, "enable logging to stderr")
 	help := flag.Bool("h", false, "print help and exit")
 
@@ -66,6 +74,7 @@ func _main() error {
 
 	if *verbose {
 		ciderLog.UseLogger(seelog.Default)
+		defer ciderLog.Flush()
 	}
 
 	// Instantiate Cider service exchanges.
@@ -76,13 +85,88 @@ func _main() error {
 	)
 	defer logger.Close()
 
+	// Register a special inproc service endpoint.
+	ciderTransport := rpc_inproc.NewTransport("Cider", balancer)
+	ciderClient, err := rpc_client.NewService(func() (rpc_client.Transport, error) {
+		return ciderTransport, nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Register service endpoints with the broker.
+	broker.RegisterEndpointFactory("cider_rpc_inproc", func() (broker.Endpoint, error) {
+		log.Println("Configuring Cider management RPC inproc transport...")
+		return ciderTransport.AsEndpoint(), nil
+	})
+
+	if *enableZmq3RPC {
+		log.Println("Configuring ZeroMQ 3.x endpoint for RPC...")
+		broker.RegisterEndpointFactory("zmq3_rpc", func() (broker.Endpoint, error) {
+			config := zrpc.NewEndpointConfig()
+			config.MustFeedFromEnv("CIDER_ZMQ3_RPC_").MustBeComplete()
+			return zrpc.NewEndpoint(config, balancer)
+		})
+	}
+
+	if *enableZmq3PubSub {
+		log.Println("Configuring ZeroMQ 3.x endpoint for PubSub...")
+		broker.RegisterEndpointFactory("zmq3_pubsub", func() (broker.Endpoint, error) {
+			config := zpubsub.NewEndpointConfig()
+			config.MustFeedFromEnv("CIDER_ZMQ3_PUBSUB_").MustBeComplete()
+			return zpubsub.NewEndpoint(config, eventBus)
+		})
+	}
+
+	if *enableZmq3Logging {
+		log.Println("Configuring ZeroMQ 3.x endpoint for Logging...")
+		broker.RegisterEndpointFactory("zmq3_logging", func() (broker.Endpoint, error) {
+			config := zlogging.NewEndpointConfig()
+			config.MustFeedFromEnv("CIDER_ZMQ3_LOGGING_").MustBeComplete()
+			return zlogging.NewEndpoint(config, logger)
+		})
+	}
+
+	if *enableWSRPC {
+		log.Println("Configuring WebSocket endpoint for RPC...")
+		broker.RegisterEndpointFactory("websocket_rpc", func() (broker.Endpoint, error) {
+			config := wsrpc.NewEndpointConfig()
+			config.MustFeedFromEnv("CIDER_WEBSOCKET_RPC_").MustBeComplete()
+			if token := os.Getenv("CIDER_WEBSOCKET_RPC_TOKEN"); token != "" {
+				config.WSHandshake = func(cfg *ws.Config, req *http.Request) error {
+					if req.Header.Get("X-Cider-Token") != token {
+						return errors.New("Invalid access token")
+					}
+					return nil
+				}
+			}
+			return wsrpc.NewEndpoint(config, balancer)
+		})
+	}
+
 	// Start catching signals.
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	// Set up Cider app manager.
+	// Terminate ZeroMQ on exit.
+	defer func() {
+		log.Println("Waiting for ZeroMQ to terminate...")
+		zmq.Term()
+		log.Println("ZeroMQ terminated")
+	}()
+
+	// Register a monitoring channel.
+	monitorCh := make(chan *broker.EndpointCrashReport)
+	broker.Monitor(monitorCh)
+
+	// Start all the registered service endpoints.
+	log.Println("Broker configured, starting registered endpoints...")
+	broker.ListenAndServe()
+	defer broker.Terminate()
+
+	// Start Cider apps.
 	if *workspace == "" {
-		*workspace = os.Getenv("CIDER_WORKSPACE")
+		*workspace = os.Getenv("CIDER_APPS_WORKSPACE")
 	}
 
 	supervisor, err := exec.NewSupervisor(*workspace)
@@ -107,65 +191,10 @@ func _main() error {
 		return err
 	}
 	defer func() {
-		log.Println("Waiting for apps to terminate ...")
-		appService.TerminateWithin(-1)
+		log.Println("Waiting for apps to terminate...")
+		appService.TerminateWithin(AppsKillTimeout)
 		log.Println("Apps terminated")
 	}()
-
-	ciderTransport := rpc_inproc.NewTransport("Cider", balancer)
-	ciderClient, err := rpc_client.NewService(func() (rpc_client.Transport, error) {
-		return ciderTransport, nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// Register service endpoints with the broker.
-	broker.RegisterEndpointFactory("cider_rpc_inproc", func() (broker.Endpoint, error) {
-		log.Println("Configuring Cider management RPC inproc transport ...")
-		return ciderTransport.AsEndpoint(), nil
-	})
-
-	if *enableZmq3RPC {
-		log.Println("Configuring ZeroMQ 3.x endpoint for RPC ...")
-		broker.RegisterEndpointFactory("zmq3_rpc", func() (broker.Endpoint, error) {
-			config := zrpc.NewEndpointConfig()
-			config.MustFeedFromEnv("CIDER_ZMQ3_RPC_").MustBeComplete()
-			return zrpc.NewEndpoint(config, balancer)
-		})
-	}
-
-	if *enableZmq3PubSub {
-		log.Println("Configuring ZeroMQ 3.x endpoint for PubSub ...")
-		broker.RegisterEndpointFactory("zmq3_pubsub", func() (broker.Endpoint, error) {
-			config := zpubsub.NewEndpointConfig()
-			config.MustFeedFromEnv("CIDER_ZMQ3_PUBSUB_").MustBeComplete()
-			return zpubsub.NewEndpoint(config, eventBus)
-		})
-	}
-
-	if *enableZmq3Logging {
-		log.Println("Configuring ZeroMQ 3.x endpoint for Logging ...")
-		broker.RegisterEndpointFactory("zmq3_logging", func() (broker.Endpoint, error) {
-			config := zlogging.NewEndpointConfig()
-			config.MustFeedFromEnv("CIDER_ZMQ3_LOGGING_").MustBeComplete()
-			return zlogging.NewEndpoint(config, logger)
-		})
-	}
-
-	defer func() {
-		log.Println("Waiting for ZeroMQ to terminate ...")
-		zmq.Term()
-		log.Println("ZeroMQ terminated")
-	}()
-
-	// Register a monitoring channel.
-	monitorCh := make(chan *broker.EndpointCrashReport)
-	broker.Monitor(monitorCh)
-
-	// Start all the registered service endpoints.
-	log.Println("Broker configured, starting registered endpoints ...")
-	broker.ListenAndServe()
 
 	// Export Cider management calls.
 	if err := appService.ExportManagementMethods(ciderClient); err != nil {
@@ -185,8 +214,7 @@ Loop:
 				log.Printf("Endpoint %v dropped", err.FactoryId)
 			}
 		case <-signalCh:
-			log.Printf("Signal received, terminating ...")
-			broker.Terminate()
+			log.Printf("Signal received, terminating...")
 			break Loop
 		}
 	}
