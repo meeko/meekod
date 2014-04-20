@@ -7,7 +7,6 @@ package vcsutil
 
 import (
 	"bytes"
-	"github.com/cider/cider/apps"
 	"github.com/cider/cider/apps/utils/executil"
 	"net/url"
 	"os/exec"
@@ -21,7 +20,7 @@ func newGitVCS(scheme string) VCS {
 	return &gitVCS{scheme}
 }
 
-func (vcs *gitVCS) Clone(repoURL *url.URL, srcDir string, ctx apps.ActionContext) error {
+func (vcs *gitVCS) Clone(repoURL *url.URL, srcDir string, ctx ActionContext) error {
 	// Assemble clone URL.
 	var buf bytes.Buffer
 	buf.WriteString(vcs.scheme)
@@ -51,7 +50,7 @@ func (vcs *gitVCS) Clone(repoURL *url.URL, srcDir string, ctx apps.ActionContext
 	return executil.Run(cmd, ctx.Interrupted())
 }
 
-func (vcs *gitVCS) Pull(repoURL *url.URL, srcDir string, ctx apps.ActionContext) error {
+func (vcs *gitVCS) Pull(repoURL *url.URL, srcDir string, ctx ActionContext) error {
 	branch := repoURL.Fragment
 	if branch == "" {
 		branch = "master"

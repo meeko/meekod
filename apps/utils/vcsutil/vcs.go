@@ -7,13 +7,20 @@ package vcsutil
 
 import (
 	"fmt"
-	"github.com/cider/cider/apps"
+	"io"
 	"net/url"
 )
 
 type VCS interface {
-	Clone(repoURL *url.URL, srcDir string, ctx apps.ActionContext) error
-	Pull(repoURL *url.URL, srcDir string, ctx apps.ActionContext) error
+	Clone(repoURL *url.URL, srcDir string, ctx ActionContext) error
+	Pull(repoURL *url.URL, srcDir string, ctx ActionContext) error
+}
+
+type ActionContext interface {
+	SignalProgress() error
+	Stdout() io.Writer
+	Stderr() io.Writer
+	Interrupted() <-chan struct{}
 }
 
 func GetVCS(scheme string) (VCS, error) {
