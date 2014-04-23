@@ -34,19 +34,38 @@ import (
 const DefaultKillTimeout = 5 * time.Second
 
 type Supervisor struct {
-	ws string
+	workspace string
 
-	records map[string]*appRecord
-	mu      *sync.Mutex
+	records   map[string]*appRecord
+	recordsMu *sync.Mutex
+
+	stopCh chan *stopCmd
+	killCh chan *stopCmd
+	waitCh chan *exitEvent
 
 	feedCh       chan *apps.AppStateChange
 	feedClosedCh chan struct{}
+
+	termCh    chan struct{}
+	termAckCh chan struct{}
 }
 
 type appRecord struct {
 	state   string
 	process *os.Process
 	termCh  chan struct{}
+}
+
+type stopCmd struct {
+	alias   string
+	ctx     apps.ActionContext
+	timeout time.Duration
+	errCh   chan error
+}
+
+type exitEvent struct {
+	alias string
+	err   error
 }
 
 func NewSupervisor(workspace string) (*Supervisor, error) {
@@ -58,13 +77,20 @@ func NewSupervisor(workspace string) (*Supervisor, error) {
 		return nil, err
 	}
 
-	return &Supervisor{
-		ws:           workspace,
+	supervisor := &Supervisor{
+		workspace:    workspace,
 		records:      make(map[string]*appRecord),
-		mu:           new(sync.Mutex),
+		recordsMu:    new(sync.Mutex),
+		stopCh:       make(chan *stopCmd, 1),
+		killCh:       make(chan *stopCmd, 1),
+		waitCh:       make(chan *exitEvent),
 		feedCh:       make(chan *apps.AppStateChange),
 		feedClosedCh: make(chan struct{}),
-	}, nil
+		termCh:       make(chan struct{}),
+		termAckCh:    make(chan struct{}),
+	}
+	go supervisor.loop()
+	return supervisor, nil
 }
 
 func (supervisor *Supervisor) getOrCreateRecord(alias string) *appRecord {
@@ -210,7 +236,6 @@ func (supervisor *Supervisor) Upgrade(app *data.App, ctx apps.ActionContext) err
 		printFAIL(ctx.Stdout())
 		return err
 	}
-
 	printOK(ctx.Stdout())
 	return nil
 }
@@ -218,8 +243,8 @@ func (supervisor *Supervisor) Upgrade(app *data.App, ctx apps.ActionContext) err
 func (supervisor *Supervisor) Remove(app *data.App, ctx apps.ActionContext) error {
 	mustHaveAlias(app)
 
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
+	supervisor.recordsMu.Lock()
+	defer supervisor.recordsMu.Unlock()
 
 	// The app must not be running.
 	record, ok := supervisor.records[app.Alias]
@@ -245,8 +270,8 @@ func (supervisor *Supervisor) Start(app *data.App, ctx apps.ActionContext) error
 	alias := app.Alias
 
 	log.Infof("Starting application %v", alias)
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
+	supervisor.recordsMu.Lock()
+	defer supervisor.recordsMu.Unlock()
 
 	// Make sure the app record exists.
 	record := supervisor.getOrCreateRecord(alias)
@@ -297,42 +322,29 @@ func (supervisor *Supervisor) Start(app *data.App, ctx apps.ActionContext) error
 	log.Infof("Application %v started", alias)
 	record.state = apps.AppStateRunning
 	record.process = cmd.Process
-	termCh := make(chan struct{})
-	record.termCh = termCh
+	record.termCh = make(chan struct{})
 	supervisor.emitStateChange(alias, apps.AppStateStopped, apps.AppStateRunning)
 
 	// Start a monitoring goroutine that waits for the process to exit.
 	go func() {
-		err := cmd.Wait()
-		log.Infof("Application %v exited", alias)
-		supervisor.mu.Lock()
-		if err == nil {
-			log.Infof("Application %v terminated cleanly", alias)
-			record.state = apps.AppStateStopped
-			supervisor.emitStateChange(alias, apps.AppStateRunning, apps.AppStateStopped)
-		} else {
-			log.Infof("Application %v crashed: %v", alias, err)
-			record.state = apps.AppStateCrashed
-			supervisor.emitStateChange(alias, apps.AppStateRunning, apps.AppStateCrashed)
-		}
-		record.process = nil
-		close(termCh)
-		supervisor.mu.Unlock()
+		supervisor.waitCh <- &exitEvent{alias, cmd.Wait()}
 	}()
 
 	return nil
 }
 
 func (supervisor *Supervisor) Stop(alias string, ctx apps.ActionContext) error {
-	return supervisor.stopApp(alias, ctx, -1)
-}
-
-func (supervisor *Supervisor) StopWithTimeout(alias string, ctx apps.ActionContext, timeout time.Duration) error {
-	return supervisor.stopApp(alias, ctx, timeout)
+	return supervisor.StopWithTimeout(alias, ctx, -1)
 }
 
 func (supervisor *Supervisor) Kill(alias string, ctx apps.ActionContext) error {
-	return supervisor.stopApp(alias, ctx, 0)
+	return supervisor.StopWithTimeout(alias, ctx, 0)
+}
+
+func (supervisor *Supervisor) StopWithTimeout(alias string, ctx apps.ActionContext, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	supervisor.stopCh <- &stopCmd{alias, ctx, timeout, errCh}
+	return <-errCh
 }
 
 func (supervisor *Supervisor) Restart(app *data.App, ctx apps.ActionContext) error {
@@ -346,8 +358,8 @@ func (supervisor *Supervisor) Restart(app *data.App, ctx apps.ActionContext) err
 }
 
 func (supervisor *Supervisor) Status(alias string, ctx apps.ActionContext) (status string, err error) {
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
+	supervisor.recordsMu.Lock()
+	defer supervisor.recordsMu.Unlock()
 
 	record, ok := supervisor.records[alias]
 	if !ok {
@@ -355,13 +367,12 @@ func (supervisor *Supervisor) Status(alias string, ctx apps.ActionContext) (stat
 		return
 	}
 
-	status = record.state
-	return
+	return record.state, nil
 }
 
 func (supervisor *Supervisor) Statuses(ctx apps.ActionContext) (statuses map[string]string, err error) {
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
+	supervisor.recordsMu.Lock()
+	defer supervisor.recordsMu.Unlock()
 
 	statuses = make(map[string]string, len(supervisor.records))
 	for k, v := range supervisor.records {
@@ -384,23 +395,133 @@ func (supervisor *Supervisor) CloseAppStateChangeFeed() {
 }
 
 func (supervisor *Supervisor) Terminate(timeout time.Duration) {
+	select {
+	case <-supervisor.termCh:
+	default:
+		return
+	}
+
 	var wg sync.WaitGroup
 	ctx := apps.NewNilActionContext()
 
-	supervisor.mu.Lock()
+	supervisor.recordsMu.Lock()
 	for alias, app := range supervisor.records {
 		if app.state == apps.AppStateRunning {
 			wg.Add(1)
 			go func(name string) {
 				defer wg.Done()
-				supervisor.stopApp(name, ctx, timeout)
+				supervisor.StopWithTimeout(name, ctx, timeout)
 			}(alias)
 		}
 	}
-	supervisor.mu.Unlock()
+	supervisor.recordsMu.Unlock()
 
 	wg.Wait()
+	close(supervisor.termCh)
+	<-supervisor.termAckCh
 	return
+}
+
+// Internal event loop ---------------------------------------------------------
+
+func (supervisor *Supervisor) loop() {
+	for {
+		select {
+		case cmd := <-supervisor.stopCh:
+			log.Infof("Stopping application %s", cmd.alias)
+			supervisor.recordsMu.Lock()
+			record, ok := supervisor.records[cmd.alias]
+			if !ok {
+				supervisor.recordsMu.Unlock()
+				cmd.errCh <- apps.ErrUnknownAlias
+				continue
+			}
+			if record.state != apps.AppStateRunning {
+				supervisor.recordsMu.Unlock()
+				cmd.errCh <- apps.ErrAppNotRunning
+				continue
+			}
+
+			switch cmd.timeout {
+			case 0:
+				supervisor.recordsMu.Unlock()
+				supervisor.killCh <- cmd
+				continue
+			case -1:
+				cmd.timeout = DefaultKillTimeout
+			}
+
+			fmt.Fprintf(cmd.ctx.Stdout(), "Interrupting application %s...\n", cmd.alias)
+			if err := record.process.Signal(os.Interrupt); err != nil {
+				supervisor.recordsMu.Unlock()
+				cmd.errCh <- err
+				continue
+			}
+
+			termCh := record.termCh
+			go func() {
+				select {
+				case <-termCh:
+					log.Infof("Application %s terminated", cmd.alias)
+					cmd.errCh <- nil
+				case <-time.After(cmd.timeout):
+					supervisor.killCh <- cmd
+				}
+			}()
+
+			supervisor.recordsMu.Unlock()
+
+		case cmd := <-supervisor.killCh:
+			log.Infof("Killing application %s", cmd.alias)
+			supervisor.recordsMu.Lock()
+			record := supervisor.records[cmd.alias]
+
+			fmt.Fprintf(cmd.ctx.Stdout(), "Killing application %s...\n", cmd.alias)
+			if err := record.process.Signal(os.Kill); err != nil {
+				supervisor.recordsMu.Unlock()
+				cmd.errCh <- err
+				continue
+			}
+			record.state = apps.AppStateKilled
+
+			termCh := record.termCh
+			go func() {
+				<-termCh
+				log.Infof("Application %s terminated", cmd.alias)
+				fmt.Fprintf(cmd.ctx.Stdout(), "Application %s terminated\n", cmd.alias)
+				cmd.errCh <- nil
+			}()
+
+			supervisor.recordsMu.Unlock()
+
+		case event := <-supervisor.waitCh:
+			supervisor.recordsMu.Lock()
+			record, ok := supervisor.records[event.alias]
+			if !ok {
+				supervisor.recordsMu.Unlock()
+				panic(apps.ErrUnknownAlias)
+			}
+
+			if record.state != apps.AppStateKilled {
+				if event.err == nil {
+					record.state = apps.AppStateStopped
+				} else {
+					record.state = apps.AppStateCrashed
+				}
+			}
+
+			record.process = nil
+			close(record.termCh)
+			record.termCh = nil
+			supervisor.recordsMu.Unlock()
+
+			supervisor.emitStateChange(event.alias, apps.AppStateRunning, record.state)
+
+		case <-supervisor.termCh:
+			close(supervisor.termAckCh)
+			return
+		}
+	}
 }
 
 // Private methods -------------------------------------------------------------
@@ -431,70 +552,6 @@ func (supervisor *Supervisor) runHook(app *data.App, hook string, ctx apps.Actio
 	return executil.Run(cmd, ctx.Interrupted())
 }
 
-func (supervisor *Supervisor) stopApp(alias string, ctx apps.ActionContext, timeout time.Duration) error {
-	log.Infof("Stopping application %v", alias)
-	supervisor.mu.Lock()
-	record, ok := supervisor.records[alias]
-	if !ok {
-		supervisor.mu.Unlock()
-		return apps.ErrUnknownAlias
-	}
-	if record.state != apps.AppStateRunning {
-		supervisor.mu.Unlock()
-		return apps.ErrAppNotRunning
-	}
-
-	// Timeout == -1 -> SIGINT and wait for DefaultKillTimeout
-	if timeout == -1 {
-		timeout = DefaultKillTimeout
-	}
-
-	// Timeout != 0 --> SIGINT and wait for timeout
-	if timeout != 0 {
-		fmt.Fprintf(ctx.Stdout(), "Stopping application %v, waiting for %v before killing it...\n",
-			alias, timeout)
-		log.Debugf("Sending interrupt to application %v", alias)
-		if err := record.process.Signal(os.Interrupt); err != nil {
-			supervisor.mu.Unlock()
-			return err
-		}
-	}
-
-	supervisor.mu.Unlock()
-	log.Infof("Waiting for application %v to terminate", alias)
-
-	// XXX: Super ugly, rewrite the whole process management thing!
-	select {
-	case <-record.termCh:
-		fmt.Fprintf(ctx.Stdout(), "Application %s stopped\n", alias)
-	case <-ctx.Interrupted():
-		return apps.ErrInterrupted
-	case <-time.After(timeout):
-		supervisor.mu.Lock()
-		fmt.Fprintf(ctx.Stdout(), "Killing application %s now...\n", alias)
-		select {
-		case <-record.termCh:
-			fmt.Fprintf(ctx.Stdout(), "Application %s managed to terminate in time\n", alias)
-		default:
-			log.Debugf("Killing application %v", alias)
-			if err := record.process.Signal(os.Kill); err != nil {
-				supervisor.mu.Unlock()
-				return err
-			}
-		}
-		supervisor.mu.Unlock()
-
-		select {
-		case <-record.termCh:
-			fmt.Fprintf(ctx.Stdout(), "Application %s killed\n", alias)
-		case <-ctx.Interrupted():
-			return apps.ErrInterrupted
-		}
-	}
-
-	return nil
-}
-
 func (supervisor *Supervisor) emitStateChange(alias, from, to string) {
 	select {
 	case supervisor.feedCh <- &apps.AppStateChange{alias, from, to}:
@@ -503,11 +560,11 @@ func (supervisor *Supervisor) emitStateChange(alias, from, to string) {
 }
 
 func (supervisor *Supervisor) appDir(alias string) string {
-	return filepath.Join(supervisor.ws, alias)
+	return filepath.Join(supervisor.workspace, alias)
 }
 
 func (supervisor *Supervisor) appStagingDir(alias string) string {
-	return filepath.Join(supervisor.ws, alias, "_stage")
+	return filepath.Join(supervisor.workspace, alias, "_stage")
 }
 
 func (supervisor *Supervisor) appSrcDir(app *data.App) string {

@@ -45,6 +45,7 @@ const (
 	AppStateStopped = "stopped"
 	AppStateRunning = "running"
 	AppStateCrashed = "crashed"
+	AppStateKilled  = "killed"
 )
 
 type AppStateChange struct {
