@@ -477,6 +477,14 @@ func (supervisor *Supervisor) loop() {
 			log.Infof("Killing application %s", cmd.alias)
 			supervisor.recordsMu.Lock()
 			record := supervisor.records[cmd.alias]
+			// Check if the application is still running. It is possible that
+			// the exit event is received on waitCh between the check on stopCh
+			// and this receive on killCh.
+			if record.state != apps.AppStateRunning {
+				supervisor.recordsMu.Unlock()
+				cmd.errCh <- nil
+				continue
+			}
 
 			fmt.Fprintf(cmd.ctx.Stdout(), "Killing application %s...\n", cmd.alias)
 			if err := record.process.Signal(os.Kill); err != nil {
