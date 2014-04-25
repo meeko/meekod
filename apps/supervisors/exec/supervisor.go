@@ -81,8 +81,8 @@ func NewSupervisor(workspace string) (*Supervisor, error) {
 		workspace:    workspace,
 		records:      make(map[string]*appRecord),
 		recordsMu:    new(sync.Mutex),
-		stopCh:       make(chan *stopCmd, 1),
-		killCh:       make(chan *stopCmd, 1),
+		stopCh:       make(chan *stopCmd),
+		killCh:       make(chan *stopCmd),
 		waitCh:       make(chan *exitEvent),
 		feedCh:       make(chan *apps.AppStateChange),
 		feedClosedCh: make(chan struct{}),
@@ -445,7 +445,9 @@ func (supervisor *Supervisor) loop() {
 			switch cmd.timeout {
 			case 0:
 				supervisor.recordsMu.Unlock()
-				supervisor.killCh <- cmd
+				go func() {
+					supervisor.killCh <- cmd
+				}()
 				continue
 			case -1:
 				cmd.timeout = DefaultKillTimeout
