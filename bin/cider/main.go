@@ -146,7 +146,7 @@ func _main() error {
 
 	// Start catching signals.
 	signalCh := make(chan os.Signal, 1)
-	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Terminate ZeroMQ on exit.
 	defer func() {
@@ -213,8 +213,8 @@ Loop:
 			if err.Dropped {
 				log.Printf("Endpoint %v dropped", err.FactoryId)
 			}
-		case <-signalCh:
-			log.Printf("Signal received, terminating...")
+		case sig := <-signalCh:
+			log.Printf("Signal received (%v), terminating...", sig)
 			break Loop
 		}
 	}
