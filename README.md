@@ -1,3 +1,12 @@
-# Cider
+# meekod
 
-Cider will be an uber-cool framework for connecting distributed pieces together.
+Meeko daemon
+
+## Status ##
+
+Still pretty much in development, although we do our best not to break it too
+often.
+
+## License ##
+
+MIT, see the `LICENSE` file.

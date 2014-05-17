@@ -1,11 +1,10 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
 
 package data
 
-//import "github.com/cider/cider/broker/services/logging"
 import "time"
 
 // List ------------------------------------------------------------------------
@@ -15,8 +14,8 @@ type ListArgs struct {
 }
 
 type ListReply struct {
-	Apps  []App  `codec:"apps,omitempty"`
-	Error string `codec:"error,omitempty"`
+	Agents []Agent `codec:"agent,omitempty"`
+	Error  string  `codec:"error,omitempty"`
 }
 
 // Install ---------------------------------------------------------------------
@@ -61,7 +60,7 @@ type InfoArgs struct {
 }
 
 type InfoReply struct {
-	App   App    `codec:"app,omitempty"`
+	Agent Agent  `codec:"agent,omitempty"`
 	Error string `codec:"error,omitempty"`
 }
 

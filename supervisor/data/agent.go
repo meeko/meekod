@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -14,7 +14,7 @@ import (
 	"unicode"
 )
 
-type App struct {
+type Agent struct {
 	Id          bson.ObjectId `bson:"_id"            codec:"-"`
 	Alias       string        `bson:"alias"          codec:"alias"`
 	Name        string        `bson:"name"           codec:"name,omitempty"`
@@ -26,17 +26,17 @@ type App struct {
 	Status      string        `bson:"-"              codec:"status,omitempty"`
 }
 
-func (app *App) FillAndValidate() error {
+func (agent *Agent) FillAndValidate() error {
 	switch {
-	case app.Name == "":
+	case agent.Name == "":
 		return fieldMissing("name")
-	case app.Version == "":
+	case agent.Version == "":
 		return fieldMissing("version")
-	case app.Description == "":
+	case agent.Description == "":
 		return fieldMissing("description")
 	}
 
-	for k, v := range app.Vars {
+	for k, v := range agent.Vars {
 		if err := v.FillAndValidate(k); err != nil {
 			return err
 		}

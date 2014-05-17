@@ -1,0 +1,17 @@
+broker:
+  endpoints:
+    logging:
+      zeromq: "ipc:///tmp/meeko/run/logging.ipc"
+    pubsub:
+      zeromq:
+        router: "ipc:///tmp/meeko/run/pubsub-router.ipc"
+        pub:    "ipc:///tmp/meeko/run/pubsub-pub.ipc"
+    rpc:
+      zeromq: "ipc:///tmp/meeko/rpc.ipc"
+      websocket:
+        address: "localhost:1234"
+        token:   "secret"
+supervisor:
+  workspace:   "/tmp/meeko/workspace"
+  mongodb_url: "localhost"
+  token:       "someOtherSecret"

@@ -1,4 +1,4 @@
-// Copyright (c) 2014 The cider AUTHORS
+// Copyright (c) 2014 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -17,14 +17,14 @@ import (
 	"time"
 
 	ws "code.google.com/p/go.net/websocket"
-	"github.com/cider/cider/broker/log"
-	"github.com/cider/cider/broker/services/rpc"
+	"github.com/meeko/meekod/broker/log"
+	"github.com/meeko/meekod/broker/services/rpc"
 	"github.com/tchap/go-websocket-frames/frames"
 )
 
 // Constants -------------------------------------------------------------------
 
-const IdentityHeader = "X-Cider-Identity"
+const IdentityHeader = "X-Meeko-Identity"
 
 const Protocol = "CDR#RPC@01"
 

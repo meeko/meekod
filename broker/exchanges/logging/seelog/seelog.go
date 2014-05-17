@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -6,7 +6,7 @@
 package seelog
 
 import (
-	"github.com/cider/cider/broker/services/logging"
+	"github.com/meeko/meekod/broker/services/logging"
 
 	slog "github.com/cihub/seelog"
 )

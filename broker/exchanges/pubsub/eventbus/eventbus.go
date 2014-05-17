@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -8,8 +8,8 @@ package eventbus
 import (
 	"sync"
 
-	"github.com/cider/cider/broker/log"
-	"github.com/cider/cider/broker/services/pubsub"
+	"github.com/meeko/meekod/broker/log"
+	"github.com/meeko/meekod/broker/services/pubsub"
 
 	"github.com/tchap/go-patricia/patricia"
 )

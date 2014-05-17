@@ -1,15 +1,15 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
 
-package apps
+package supervisor
 
 import (
 	"fmt"
-	"github.com/cider/cider/apps/data"
-	"github.com/cider/cider/broker/services/logging"
-	"github.com/cider/go-cider/cider/services/rpc"
+	"github.com/meeko/go-meeko/meeko/services/rpc"
+	"github.com/meeko/meekod/broker/services/logging"
+	"github.com/meeko/meekod/supervisor/data"
 	"github.com/wsxiaoys/terminal/color"
 	"io"
 	"labix.org/v2/mgo/bson"
@@ -33,79 +33,79 @@ const (
 	numCmds
 )
 
-func (srv *AppService) ExportManagementMethods(client *rpc.Service) (err error) {
+func (sup *Supervisor) ExportManagementMethods(client *rpc.Service) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = r.(error)
 		}
 	}()
 
-	client.MustRegisterMethod("Cider.Apps.List", srv.handleList)
-	client.MustRegisterMethod("Cider.Apps.Install", srv.handleInstall)
-	client.MustRegisterMethod("Cider.Apps.Upgrade", srv.handleUpgrade)
-	client.MustRegisterMethod("Cider.Apps.Remove", srv.handleRemove)
+	client.MustRegisterMethod("Meeko.Agent.List", sup.handleList)
+	client.MustRegisterMethod("Meeko.Agent.Install", sup.handleInstall)
+	client.MustRegisterMethod("Meeko.Agent.Upgrade", sup.handleUpgrade)
+	client.MustRegisterMethod("Meeko.Agent.Remove", sup.handleRemove)
 
-	client.MustRegisterMethod("Cider.Apps.Info", srv.handleInfo)
-	client.MustRegisterMethod("Cider.Apps.Env", srv.handleEnv)
-	client.MustRegisterMethod("Cider.Apps.Set", srv.handleSet)
-	client.MustRegisterMethod("Cider.Apps.Unset", srv.handleUnset)
+	client.MustRegisterMethod("Meeko.Agent.Info", sup.handleInfo)
+	client.MustRegisterMethod("Meeko.Agent.Env", sup.handleEnv)
+	client.MustRegisterMethod("Meeko.Agent.Set", sup.handleSet)
+	client.MustRegisterMethod("Meeko.Agent.Unset", sup.handleUnset)
 
-	client.MustRegisterMethod("Cider.Apps.Start", srv.handleStart)
-	client.MustRegisterMethod("Cider.Apps.Stop", srv.handleStop)
-	client.MustRegisterMethod("Cider.Apps.Restart", srv.handleRestart)
-	client.MustRegisterMethod("Cider.Apps.Status", srv.handleStatus)
-	client.MustRegisterMethod("Cider.Apps.Watch", srv.handleWatch)
+	client.MustRegisterMethod("Meeko.Agent.Start", sup.handleStart)
+	client.MustRegisterMethod("Meeko.Agent.Stop", sup.handleStop)
+	client.MustRegisterMethod("Meeko.Agent.Restart", sup.handleRestart)
+	client.MustRegisterMethod("Meeko.Agent.Status", sup.handleStatus)
+	client.MustRegisterMethod("Meeko.Agent.Watch", sup.handleWatch)
 
 	return
 }
 
-func (srv *AppService) enqueueCmdAndWait(cmd int, request rpc.RemoteRequest) {
+func (sup *Supervisor) enqueueCmdAndWait(cmd int, request rpc.RemoteRequest) {
 	select {
-	case srv.cmdChans[cmd] <- request:
+	case sup.cmdChans[cmd] <- request:
 	case <-request.Interrupted():
 		request.Resolve(1, map[string]string{"error": "interrupted"})
-	case <-srv.termCh:
+	case <-sup.termCh:
 		request.Resolve(2, map[string]string{"error": "terminated"})
 	}
 
 	<-request.Resolved()
 }
 
-func (srv *AppService) loop() {
+func (sup *Supervisor) loop() {
 	handlers := []rpc.RequestHandler{
-		cmdList:    srv.safeHandleList,
-		cmdInstall: srv.safeHandleInstall,
-		cmdUpgrade: srv.safeHandleUpgrade,
-		cmdRemove:  srv.safeHandleRemove,
-		cmdInfo:    srv.safeHandleInfo,
-		cmdEnv:     srv.safeHandleEnv,
-		cmdSet:     srv.safeHandleSet,
-		cmdUnset:   srv.safeHandleUnset,
-		cmdStart:   srv.safeHandleStart,
-		cmdStop:    srv.safeHandleStop,
-		cmdRestart: srv.safeHandleRestart,
-		cmdStatus:  srv.safeHandleStatus,
-		cmdWatch:   srv.safeHandleWatch,
+		cmdList:    sup.safeHandleList,
+		cmdInstall: sup.safeHandleInstall,
+		cmdUpgrade: sup.safeHandleUpgrade,
+		cmdRemove:  sup.safeHandleRemove,
+		cmdInfo:    sup.safeHandleInfo,
+		cmdEnv:     sup.safeHandleEnv,
+		cmdSet:     sup.safeHandleSet,
+		cmdUnset:   sup.safeHandleUnset,
+		cmdStart:   sup.safeHandleStart,
+		cmdStop:    sup.safeHandleStop,
+		cmdRestart: sup.safeHandleRestart,
+		cmdStatus:  sup.safeHandleStatus,
+		cmdWatch:   sup.safeHandleWatch,
 	}
 
-	cases := make([]reflect.SelectCase, len(srv.cmdChans)+1)
-	for i := range srv.cmdChans {
+	cases := make([]reflect.SelectCase, len(sup.cmdChans)+1)
+	for i := range sup.cmdChans {
 		cases[i] = reflect.SelectCase{
 			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(srv.cmdChans[i]),
+			Chan: reflect.ValueOf(sup.cmdChans[i]),
 		}
 	}
 	termChIndex := len(cases) - 1
 	cases[termChIndex] = reflect.SelectCase{
 		Dir:  reflect.SelectRecv,
-		Chan: reflect.ValueOf(srv.termCh),
+		Chan: reflect.ValueOf(sup.termCh),
 	}
 
 	for {
 		chosen, recv, _ := reflect.Select(cases)
 		switch chosen {
 		case termChIndex:
-			close(srv.loopTermAckCh)
+			close(sup.loopTermAckCh)
 			return
 		default:
 			handlers[chosen](recv.Interface().(rpc.RemoteRequest))
@@ -115,49 +115,49 @@ func (srv *AppService) loop() {
 
 // List ------------------------------------------------------------------------
 
-func (srv *AppService) handleList(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdList, request)
+func (sup *Supervisor) handleList(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdList, request)
 }
 
-func (srv *AppService) safeHandleList(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleList(request rpc.RemoteRequest) {
 	var args data.ListArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.ListReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.ListReply{Error: err.Error()})
 		return
 	}
 
-	var apps []data.App
-	if err := srv.apps.Find(nil).All(&apps); err != nil {
+	var agents []data.Agent
+	if err := sup.agents.Find(nil).All(&agents); err != nil {
 		request.Resolve(5, data.ListReply{Error: err.Error()})
 	}
 
-	request.Resolve(0, data.ListReply{Apps: apps})
+	request.Resolve(0, data.ListReply{Agents: agents})
 }
 
 // Install ---------------------------------------------------------------------
 
-func (srv *AppService) handleInstall(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdInstall, request)
+func (sup *Supervisor) handleInstall(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdInstall, request)
 }
 
-func (srv *AppService) safeHandleInstall(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleInstall(request rpc.RemoteRequest) {
 	var args data.InstallArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.InstallReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.InstallReply{Error: err.Error()})
 		return
 	}
 
-	n, err := srv.apps.Find(bson.M{"alias": args.Alias}).Count()
+	n, err := sup.agents.Find(bson.M{"alias": args.Alias}).Count()
 	if err != nil {
 		request.Resolve(5, data.InstallReply{Error: err.Error()})
 		return
@@ -167,18 +167,18 @@ func (srv *AppService) safeHandleInstall(request rpc.RemoteRequest) {
 		return
 	}
 
-	app, err := srv.supervisor.Install(args.Alias, args.Repository, request)
+	agent, err := sup.impl.Install(args.Alias, args.Repository, request)
 	if err != nil {
 		request.Resolve(7, data.InstallReply{Error: err.Error()})
 		return
 	}
 
-	app.Id = bson.NewObjectId()
+	agent.Id = bson.NewObjectId()
 
-	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Inserting the app database record ... ")
-	if err := srv.apps.Insert(app); err != nil {
+	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Inserting the agent database record ... ")
+	if err := sup.agents.Insert(agent); err != nil {
 		fail(request.Stdout())
-		srv.supervisor.Remove(app, request)
+		sup.impl.Remove(agent, request)
 		request.Resolve(8, data.InstallReply{Error: err.Error()})
 		return
 	}
@@ -189,29 +189,29 @@ func (srv *AppService) safeHandleInstall(request rpc.RemoteRequest) {
 
 // Upgrade ---------------------------------------------------------------------
 
-func (srv *AppService) handleUpgrade(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdUpgrade, request)
+func (sup *Supervisor) handleUpgrade(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdUpgrade, request)
 }
 
-func (srv *AppService) safeHandleUpgrade(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleUpgrade(request rpc.RemoteRequest) {
 	var args data.UpgradeArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.UpgradeReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.UpgradeReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	if err := srv.apps.Find(bson.M{"alias": args.Alias}).One(&app); err != nil {
+	var agent data.Agent
+	if err := sup.agents.Find(bson.M{"alias": args.Alias}).One(&agent); err != nil {
 		request.Resolve(5, data.UpgradeReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.supervisor.Upgrade(&app, request); err != nil {
+	if err := sup.impl.Upgrade(&agent, request); err != nil {
 		request.Resolve(6, data.UpgradeReply{Error: err.Error()})
 		return
 	}
@@ -221,35 +221,35 @@ func (srv *AppService) safeHandleUpgrade(request rpc.RemoteRequest) {
 
 // Remove ----------------------------------------------------------------------
 
-func (srv *AppService) handleRemove(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdRemove, request)
+func (sup *Supervisor) handleRemove(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdRemove, request)
 }
 
-func (srv *AppService) safeHandleRemove(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleRemove(request rpc.RemoteRequest) {
 	var args data.RemoveArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.RemoveReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.RemoveReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	if err := srv.apps.Find(bson.M{"alias": args.Alias}).One(&app); err != nil {
+	var agent data.Agent
+	if err := sup.agents.Find(bson.M{"alias": args.Alias}).One(&agent); err != nil {
 		request.Resolve(5, data.RemoveReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.supervisor.Remove(&app, request); err != nil {
+	if err := sup.impl.Remove(&agent, request); err != nil {
 		request.Resolve(6, data.RemoveReply{Error: err.Error()})
 		return
 	}
 
-	color.Fprint(request.Stdout(), "@{c}>>>@{|} Deleting the app database record ... ")
-	if err := srv.apps.RemoveId(app.Id); err != nil {
+	color.Fprint(request.Stdout(), "@{c}>>>@{|} Deleting the agent database record ... ")
+	if err := sup.agents.RemoveId(agent.Id); err != nil {
 		fail(request.Stdout())
 		request.Resolve(7, data.RemoveReply{Error: err.Error()})
 		return
@@ -261,97 +261,97 @@ func (srv *AppService) safeHandleRemove(request rpc.RemoteRequest) {
 
 // Info ------------------------------------------------------------------------
 
-func (srv *AppService) handleInfo(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdInfo, request)
+func (sup *Supervisor) handleInfo(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdInfo, request)
 }
 
-func (srv *AppService) safeHandleInfo(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleInfo(request rpc.RemoteRequest) {
 	var args data.InfoArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.InfoReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.InfoReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	if err := srv.apps.Find(bson.M{"alias": args.Alias}).One(&app); err != nil {
+	var agent data.Agent
+	if err := sup.agents.Find(bson.M{"alias": args.Alias}).One(&agent); err != nil {
 		request.Resolve(5, data.InfoReply{Error: err.Error()})
 		return
 	}
 
-	for _, v := range app.Vars {
+	for _, v := range agent.Vars {
 		if v.Secret && v.Value != "" {
 			v.Value = "<secret>"
 		}
 	}
 
-	request.Resolve(0, data.InfoReply{App: app})
+	request.Resolve(0, data.InfoReply{Agent: agent})
 }
 
 // Env -------------------------------------------------------------------------
 
-func (srv *AppService) handleEnv(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdEnv, request)
+func (sup *Supervisor) handleEnv(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdEnv, request)
 }
 
-func (srv *AppService) safeHandleEnv(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleEnv(request rpc.RemoteRequest) {
 	var args data.EnvArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.EnvReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.EnvReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	err := srv.apps.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&app)
+	var agent data.Agent
+	err := sup.agents.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&agent)
 	if err != nil {
 		request.Resolve(5, data.EnvReply{Error: err.Error()})
 		return
 	}
 
-	for _, v := range app.Vars {
+	for _, v := range agent.Vars {
 		if v.Secret {
 			v.Value = "<secret>"
 		}
 	}
 
-	request.Resolve(0, data.EnvReply{Vars: app.Vars})
+	request.Resolve(0, data.EnvReply{Vars: agent.Vars})
 }
 
 // Set -------------------------------------------------------------------------
 
-func (srv *AppService) handleSet(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdSet, request)
+func (sup *Supervisor) handleSet(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdSet, request)
 }
 
-func (srv *AppService) safeHandleSet(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleSet(request rpc.RemoteRequest) {
 	var args data.SetArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.SetReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.SetReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	err := srv.apps.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&app)
+	var agent data.Agent
+	err := sup.agents.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&agent)
 	if err != nil {
 		request.Resolve(5, data.SetReply{Error: err.Error()})
 		return
 	}
 
-	vr, ok := app.Vars[args.Variable]
+	vr, ok := agent.Vars[args.Variable]
 	if !ok {
 		request.Resolve(6, data.SetReply{Error: "unknown variable"})
 		return
@@ -362,7 +362,7 @@ func (srv *AppService) safeHandleSet(request rpc.RemoteRequest) {
 		return
 	}
 
-	err = srv.apps.UpdateId(app.Id, bson.M{"$set": bson.M{"vars." + args.Variable + ".value": vr.Value}})
+	err = sup.agents.UpdateId(agent.Id, bson.M{"$set": bson.M{"vars." + args.Variable + ".value": vr.Value}})
 	if err != nil {
 		request.Resolve(8, data.SetReply{Error: err.Error()})
 		return
@@ -373,37 +373,37 @@ func (srv *AppService) safeHandleSet(request rpc.RemoteRequest) {
 
 // Unset -----------------------------------------------------------------------
 
-func (srv *AppService) handleUnset(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdUnset, request)
+func (sup *Supervisor) handleUnset(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdUnset, request)
 }
 
-func (srv *AppService) safeHandleUnset(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleUnset(request rpc.RemoteRequest) {
 	var args data.UnsetArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.UnsetReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.UnsetReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	err := srv.apps.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&app)
+	var agent data.Agent
+	err := sup.agents.Find(bson.M{"alias": args.Alias}).Select(bson.M{"vars": 1}).One(&agent)
 	if err != nil {
 		request.Resolve(5, data.UnsetReply{Error: err.Error()})
 		return
 	}
 
-	vr, ok := app.Vars[args.Variable]
+	vr, ok := agent.Vars[args.Variable]
 	if !ok {
 		request.Resolve(6, data.UnsetReply{Error: "unknown variable"})
 		return
 	}
 
 	if vr.Value != "" {
-		err = srv.apps.UpdateId(app.Id, bson.M{"$set": bson.M{"vars." + args.Variable + ".value": ""}})
+		err = sup.agents.UpdateId(agent.Id, bson.M{"$set": bson.M{"vars." + args.Variable + ".value": ""}})
 		if err != nil {
 			request.Resolve(7, data.UnsetReply{Error: err.Error()})
 			return
@@ -415,44 +415,44 @@ func (srv *AppService) safeHandleUnset(request rpc.RemoteRequest) {
 
 // Start -----------------------------------------------------------------------
 
-func (srv *AppService) handleStart(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdStart, request)
+func (sup *Supervisor) handleStart(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdStart, request)
 }
 
-func (srv *AppService) safeHandleStart(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleStart(request rpc.RemoteRequest) {
 	var args data.StartArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.StartReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.StartReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	if err := srv.apps.Find(bson.M{"alias": args.Alias}).One(&app); err != nil {
+	var agent data.Agent
+	if err := sup.agents.Find(bson.M{"alias": args.Alias}).One(&agent); err != nil {
 		request.Resolve(5, data.StartReply{Error: err.Error()})
 		return
 	}
 
-	if err := app.Vars.Filled(); err != nil {
+	if err := agent.Vars.Filled(); err != nil {
 		request.Resolve(6, data.StartReply{Error: err.Error()})
 		return
 	}
 
-	err := srv.apps.UpdateId(app.Id, bson.M{"$set": bson.M{"enabled": true}})
+	err := sup.agents.UpdateId(agent.Id, bson.M{"$set": bson.M{"enabled": true}})
 	if err != nil {
 		request.Resolve(7, data.StartReply{Error: err.Error()})
 		return
 	}
 
 	if args.Watch {
-		go srv.watchApp(args.Alias, logging.LevelUnset, request)
+		go sup.watchAgent(args.Alias, logging.LevelUnset, request)
 	}
 
-	if err := srv.supervisor.Start(&app, request); err != nil {
+	if err := sup.impl.Start(&agent, request); err != nil {
 		request.Resolve(8, data.StartReply{Error: err.Error()})
 		return
 	}
@@ -464,28 +464,28 @@ func (srv *AppService) safeHandleStart(request rpc.RemoteRequest) {
 
 // Stop ------------------------------------------------------------------------
 
-func (srv *AppService) handleStop(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdStop, request)
+func (sup *Supervisor) handleStop(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdStop, request)
 }
 
-func (srv *AppService) safeHandleStop(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleStop(request rpc.RemoteRequest) {
 	var args data.StopArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.StopReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.StopReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.supervisor.StopWithTimeout(args.Alias, request, args.Timeout); err != nil {
+	if err := sup.impl.StopWithTimeout(args.Alias, request, args.Timeout); err != nil {
 		request.Resolve(5, data.StopReply{Error: err.Error()})
 		return
 	}
 
-	err := srv.apps.Update(bson.M{"alias": args.Alias}, bson.M{"$set": bson.M{"enabled": false}})
+	err := sup.agents.Update(bson.M{"alias": args.Alias}, bson.M{"$set": bson.M{"enabled": false}})
 	if err != nil {
 		request.Resolve(6, data.StopReply{Error: err.Error()})
 		return
@@ -496,29 +496,29 @@ func (srv *AppService) safeHandleStop(request rpc.RemoteRequest) {
 
 // Restart ---------------------------------------------------------------------
 
-func (srv *AppService) handleRestart(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdRestart, request)
+func (sup *Supervisor) handleRestart(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdRestart, request)
 }
 
-func (srv *AppService) safeHandleRestart(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleRestart(request rpc.RemoteRequest) {
 	var args data.RestartArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.RestartReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.RestartReply{Error: err.Error()})
 		return
 	}
 
-	var app data.App
-	if err := srv.apps.Find(bson.M{"alias": args.Alias}).One(&app); err != nil {
+	var agent data.Agent
+	if err := sup.agents.Find(bson.M{"alias": args.Alias}).One(&agent); err != nil {
 		request.Resolve(5, data.RestartReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.supervisor.Restart(&app, request); err != nil {
+	if err := sup.impl.Restart(&agent, request); err != nil {
 		request.Resolve(6, data.StartReply{Error: err.Error()})
 		return
 	}
@@ -528,32 +528,32 @@ func (srv *AppService) safeHandleRestart(request rpc.RemoteRequest) {
 
 // Status ----------------------------------------------------------------------
 
-func (srv *AppService) handleStatus(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdStatus, request)
+func (sup *Supervisor) handleStatus(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdStatus, request)
 }
 
-func (srv *AppService) safeHandleStatus(request rpc.RemoteRequest) {
+func (sup *Supervisor) safeHandleStatus(request rpc.RemoteRequest) {
 	var args data.StatusArgs
 	if err := request.UnmarshalArgs(&args); err != nil {
 		request.Resolve(3, data.StatusReply{Error: err.Error()})
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.StatusReply{Error: err.Error()})
 		return
 	}
 
 	var reply data.StatusReply
 	if args.Alias != "" {
-		status, err := srv.supervisor.Status(args.Alias, request)
+		status, err := sup.impl.Status(args.Alias, request)
 		if err != nil {
 			request.Resolve(5, data.StatusReply{Error: err.Error()})
 			return
 		}
 		reply.Status = status
 	} else {
-		statuses, err := srv.supervisor.Statuses(request)
+		statuses, err := sup.impl.Statuses(request)
 		if err != nil {
 			request.Resolve(5, data.StatusReply{Error: err.Error()})
 			return
@@ -566,12 +566,12 @@ func (srv *AppService) safeHandleStatus(request rpc.RemoteRequest) {
 
 // Watch -----------------------------------------------------------------------
 
-func (srv *AppService) handleWatch(request rpc.RemoteRequest) {
-	srv.enqueueCmdAndWait(cmdWatch, request)
+func (sup *Supervisor) handleWatch(request rpc.RemoteRequest) {
+	sup.enqueueCmdAndWait(cmdWatch, request)
 }
 
-func (srv *AppService) safeHandleWatch(request rpc.RemoteRequest) {
-	if srv.logs == nil {
+func (sup *Supervisor) safeHandleWatch(request rpc.RemoteRequest) {
+	if sup.logs == nil {
 		request.Resolve(9, data.WatchReply{Error: "log watching is disabled"})
 		return
 	}
@@ -582,30 +582,30 @@ func (srv *AppService) safeHandleWatch(request rpc.RemoteRequest) {
 		return
 	}
 
-	if err := srv.authenticate(args.Token); err != nil {
+	if err := sup.authenticate(args.Token); err != nil {
 		request.Resolve(4, data.WatchReply{Error: err.Error()})
 		return
 	}
 
-	status, err := srv.supervisor.Status(args.Alias, request)
+	status, err := sup.impl.Status(args.Alias, request)
 	if err != nil {
 		request.Resolve(5, data.WatchReply{Error: err.Error()})
 		return
 	}
 
-	if status != AppStateRunning {
-		request.Resolve(6, data.WatchReply{Error: ErrAppNotRunning.Error()})
+	if status != AgentStateRunning {
+		request.Resolve(6, data.WatchReply{Error: ErrAgentNotRunning.Error()})
 		return
 	}
 
-	go srv.watchApp(args.Alias, logging.Level(args.Level), request)
+	go sup.watchAgent(args.Alias, logging.Level(args.Level), request)
 }
 
-// XXX: If someone stops the app while someone else is watching,
+// XXX: If someone stops the agent while someone else is watching,
 //      the logs just stop streaming. That could be improved.
-func (srv *AppService) watchApp(alias string, level logging.Level, request rpc.RemoteRequest) {
-	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Streaming logs for application %s\n", alias)
-	handle, err := srv.logs.Subscribe(alias, level,
+func (sup *Supervisor) watchAgent(alias string, level logging.Level, request rpc.RemoteRequest) {
+	color.Fprintf(request.Stdout(), "@{c}>>>@{|} Streaming logs for agent %s\n", alias)
+	handle, err := sup.logs.Subscribe(alias, level,
 		func(level logging.Level, record []byte) {
 			fmt.Fprintf(request.Stdout(), "[%v] %s\n", level, string(record))
 		})
@@ -616,7 +616,7 @@ func (srv *AppService) watchApp(alias string, level logging.Level, request rpc.R
 
 	<-request.Interrupted()
 
-	if err := srv.logs.Unsubscribe(handle); err != nil {
+	if err := sup.logs.Unsubscribe(handle); err != nil {
 		request.Resolve(10, data.WatchReply{Error: err.Error()})
 		return
 	}

@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -9,9 +9,9 @@ import (
 	"bytes"
 	"errors"
 
-	"github.com/cider/cider/broker/log"
-	"github.com/cider/cider/broker/services/logging"
-	"github.com/cider/cider/broker/transports/zmq3/loop"
+	"github.com/meeko/meekod/broker/log"
+	"github.com/meeko/meekod/broker/services/logging"
+	"github.com/meeko/meekod/broker/transports/zmq3/loop"
 
 	"github.com/dmotylev/nutrition"
 	zmq "github.com/pebbe/zmq3"

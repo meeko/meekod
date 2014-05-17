@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cider/cider/broker/log"
+	"github.com/meeko/meekod/broker/log"
 )
 
 //------------------------------------------------------------------------------
@@ -174,9 +174,12 @@ func (b *Broker) ListenAndServe() {
 				if errCounter == NumAllowedConsecutiveErrors {
 					log.Warnf("[broker] Endpoint %v reached the error threshold, dropping ...", id)
 					if b.monitorCh != nil {
-						b.monitorCh <- &EndpointCrashReport{
+						select {
+						case b.monitorCh <- &EndpointCrashReport{
 							FactoryId: id,
 							Dropped:   true,
+						}:
+						case <-b.termCh:
 						}
 					}
 					return
@@ -189,9 +192,13 @@ func (b *Broker) ListenAndServe() {
 					log.Errorf("[broker] Failed to instantiate %v: %v", id, err)
 					errCounter++
 					if b.monitorCh != nil {
-						b.monitorCh <- &EndpointCrashReport{
+						select {
+						case b.monitorCh <- &EndpointCrashReport{
 							FactoryId: id,
 							Error:     err,
+						}:
+						case <-b.termCh:
+							return
 						}
 					}
 					continue

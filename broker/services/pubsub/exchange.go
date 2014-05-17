@@ -1,11 +1,11 @@
-// Copyright (c) 2013 The cider AUTHORS
+// Copyright (c) 2013 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
 
 package pubsub
 
-import "github.com/cider/cider/broker"
+import "github.com/meeko/meekod/broker"
 
 type EventSeqNum uint32
 
