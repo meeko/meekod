@@ -38,7 +38,6 @@ import (
 	// Others
 	ws "code.google.com/p/go.net/websocket"
 	"github.com/cihub/seelog"
-	_ "github.com/joho/godotenv/autoload" // Load .env on init.
 	zmq "github.com/pebbe/zmq3"
 )
 
