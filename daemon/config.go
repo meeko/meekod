@@ -1,9 +1,9 @@
-// Copyright (c) 2013 The meeko AUTHORS
+// Copyright (c) 2013-2014 The meeko AUTHORS
 //
 // Use of this source code is governed by the MIT license
 // that can be found in the LICENSE file.
 
-package main
+package daemon
 
 import (
 	"fmt"
@@ -66,7 +66,7 @@ func (cfg *Config) ensureCommonConfig() error {
 	return nil
 }
 
-func (cfg *Config) EnsureSupervisorConfig() error {
+func (cfg *Config) ensureSupervisorConfig() error {
 	var missing string
 
 	switch {
@@ -86,7 +86,7 @@ func (cfg *Config) EnsureSupervisorConfig() error {
 	return nil
 }
 
-func (cfg *Config) EnsureZmqConfig() error {
+func (cfg *Config) ensureZmqConfig() error {
 	var missing string
 
 	switch {
@@ -138,7 +138,7 @@ func (cfg *Config) PopulateEnviron() error {
 		return err
 	}
 
-	if err := cfg.EnsureZmqConfig(); err != nil {
+	if err := cfg.ensureZmqConfig(); err != nil {
 		return nil
 	}
 

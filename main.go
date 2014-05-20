@@ -7,62 +7,43 @@ package main
 
 import (
 	// Stdlib
-	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	// Meeko broker
+	// Meeko
 	"github.com/meeko/meekod/broker"
-	"github.com/meeko/meekod/broker/exchanges/logging/publisher"
-	"github.com/meeko/meekod/broker/exchanges/pubsub/eventbus"
-	"github.com/meeko/meekod/broker/exchanges/rpc/roundrobin"
-	meekoLog "github.com/meeko/meekod/broker/log"
-	wsrpc "github.com/meeko/meekod/broker/transports/websocket/rpc"
-	zlogging "github.com/meeko/meekod/broker/transports/zmq3/logging"
-	zpubsub "github.com/meeko/meekod/broker/transports/zmq3/pubsub"
-	zrpc "github.com/meeko/meekod/broker/transports/zmq3/rpc"
+	broklog "github.com/meeko/meekod/broker/log"
+	"github.com/meeko/meekod/daemon"
 
-	// Meeko client
-	rpc_client "github.com/meeko/go-meeko/meeko/services/rpc"
-	rpc_inproc "github.com/meeko/go-meeko/meeko/transports/inproc/rpc"
-
-	// Meeko apps
-	"github.com/meeko/meekod/supervisor"
-	"github.com/meeko/meekod/supervisor/implementations/exec"
-
-	// Others
-	ws "code.google.com/p/go.net/websocket"
+	// Other
 	"github.com/cihub/seelog"
-	zmq "github.com/pebbe/zmq3"
 )
 
 func main() {
-	if err := runMeeko(); err != nil {
-		log.Printf("Error: %v\n", err)
-		os.Exit(1)
+	if err := run(); err != nil {
+		log.Fatalln("Error: ", err)
 	}
 }
 
-func runMeeko() error {
+func run() error {
 	// Get rid of the date and time log prefix.
 	log.SetFlags(0)
 
 	// Parse configuration.
 	var (
-		configPath   string = os.Getenv("MEEKOD_CONFIG")
-		noSupervisor bool   = os.Getenv("MEEKOD_DISABLE_SUPERVISOR") != ""
-		noZmq        bool   = os.Getenv("MEEKOD_DISABLE_ZMQ") != ""
-		verbose      bool   = os.Getenv("MEEKOD_VERBOSE") != ""
+		configPath   = os.Getenv("MEEKOD_CONFIG")
+		noSupervisor = os.Getenv("MEEKOD_DISABLE_SUPERVISOR") != ""
+		noIPC        = os.Getenv("MEEKOD_DISABLE_PLATFORM_ENDPOINTS") != ""
+		verbose      = os.Getenv("MEEKOD_VERBOSE") != ""
 	)
 	flag.StringVar(&configPath, "config", configPath, "configuration file path")
 	flag.BoolVar(&noSupervisor, "disable_supervisor", noSupervisor, "disable the agent supervisor")
-	flag.BoolVar(&noZmq, "disable_zmq", noZmq, "disable all ZeroMQ 3.x service endpoints")
-	flag.BoolVar(&verbose, "verbose", verbose, "enable logging to stderr")
+	flag.BoolVar(&noIPC, "disable_ipc", noIPC, "disable all IPC service endpoints")
+	flag.BoolVar(&verbose, "verbose", verbose, "enable more verbose logging")
 	help := flag.Bool("h", false, "print help and exit")
 	flag.Parse()
 
@@ -70,111 +51,23 @@ func runMeeko() error {
 		Usage()
 	}
 
+	// TODO: Logging is a mess, it need some more thinking.
 	if verbose {
-		meekoLog.UseLogger(seelog.Default)
-		defer meekoLog.Flush()
+		broklog.UseLogger(seelog.Default)
+		defer broklog.Flush()
+	} else {
+		seelog.ReplaceLogger(seelog.Disabled)
 	}
 
-	// Read the config file.
-	if configPath == "" {
-		return errors.New("configuration file path not set")
-	}
-
-	config, err := readConfig(configPath)
+	// Create a daemon instance from the specified config file.
+	dmn, err := daemon.NewFromConfigAsFile(configPath, &daemon.Options{
+		DisableSupervisor:     noSupervisor,
+		DisableLocalEndpoints: noIPC,
+	})
 	if err != nil {
 		return err
 	}
-
-	if !noSupervisor {
-		if err := config.EnsureSupervisorConfig(); err != nil {
-			return err
-		}
-	}
-	if !noZmq {
-		if err := config.EnsureZmqConfig(); err != nil {
-			return err
-		}
-	}
-
-	// Instantiate Meeko service exchanges.
-	var (
-		balancer = roundrobin.NewBalancer()
-		eventBus = eventbus.New()
-		logger   = publisher.New()
-	)
-	defer logger.Close()
-
-	// Register a special inproc service endpoint.
-	var inprocClient *rpc_client.Service
-	if !noSupervisor {
-		transport := rpc_inproc.NewTransport("Meeko", balancer)
-		inprocClient, err = rpc_client.NewService(func() (rpc_client.Transport, error) {
-			return transport, nil
-		})
-		if err != nil {
-			return err
-		}
-
-		// Register service endpoints with the broker.
-		broker.RegisterEndpointFactory("meeko_rpc_inproc", func() (broker.Endpoint, error) {
-			log.Println("Configuring Meeko management RPC inproc transport...")
-			return transport.AsEndpoint(), nil
-		})
-	}
-
-	if !noZmq {
-		// Register all the ZeroMQ service endpoints.
-		log.Println("Configuring ZeroMQ 3.x endpoint for RPC...")
-		broker.RegisterEndpointFactory("zmq3_rpc", func() (broker.Endpoint, error) {
-			cfg := zrpc.NewEndpointConfig()
-			cfg.Endpoint = config.Broker.Endpoints.RPC.ZeroMQ
-			cfg.MustBeComplete()
-			return zrpc.NewEndpoint(cfg, balancer)
-		})
-
-		log.Println("Configuring ZeroMQ 3.x endpoint for PubSub...")
-		broker.RegisterEndpointFactory("zmq3_pubsub", func() (broker.Endpoint, error) {
-			cfg := zpubsub.NewEndpointConfig()
-			cfg.RouterEndpoint = config.Broker.Endpoints.PubSub.ZeroMQ.Router
-			cfg.PubEndpoint = config.Broker.Endpoints.PubSub.ZeroMQ.Pub
-			cfg.MustBeComplete()
-			return zpubsub.NewEndpoint(cfg, eventBus)
-		})
-
-		log.Println("Configuring ZeroMQ 3.x endpoint for Logging...")
-		broker.RegisterEndpointFactory("zmq3_logging", func() (broker.Endpoint, error) {
-			cfg := zlogging.NewEndpointConfig()
-			cfg.Endpoint = config.Broker.Endpoints.Logging.ZeroMQ
-			cfg.MustBeComplete()
-			return zlogging.NewEndpoint(cfg, logger)
-		})
-
-		// Terminate ZeroMQ on exit.
-		defer func() {
-			log.Println("Waiting for ZeroMQ to terminate...")
-			zmq.Term()
-			log.Println("ZeroMQ terminated")
-		}()
-	} else {
-		// Terminate ZeroMQ now.
-		zmq.Term()
-	}
-
-	// Register the WebSocket RPC endpoint. This one is always enabled
-	// so that the management utility can connect to Meeko.
-	log.Println("Configuring WebSocket endpoint for RPC...")
-	broker.RegisterEndpointFactory("websocket_rpc", func() (broker.Endpoint, error) {
-		cfg := wsrpc.NewEndpointConfig()
-		cfg.Addr = config.Broker.Endpoints.RPC.WebSocket.Address
-		token := config.Broker.Endpoints.RPC.WebSocket.Token
-		cfg.WSHandshake = func(cfg *ws.Config, req *http.Request) error {
-			if req.Header.Get("X-Meeko-Token") != token {
-				return errors.New("Invalid access token")
-			}
-			return nil
-		}
-		return wsrpc.NewEndpoint(cfg, balancer)
-	})
+	defer dmn.Terminate()
 
 	// Start catching signals.
 	signalCh := make(chan os.Signal, 1)
@@ -182,59 +75,24 @@ func runMeeko() error {
 
 	// Register a monitoring channel.
 	monitorCh := make(chan *broker.EndpointCrashReport)
-	broker.Monitor(monitorCh)
-
-	// Start all the registered service endpoints.
-	log.Println("Broker configured, starting registered endpoints...")
-	broker.ListenAndServe()
-	defer broker.Terminate()
-
-	if !noSupervisor {
-		// Start the supervisor.
-		supImpl, err := exec.NewSupervisor(config.Supervisor.Workspace)
-		if err != nil {
-			return err
-		}
-		// TODO: This is a weird method name and anyway, do we need it?
-		//       There should be probably a method for enabling such a channel.
-		supImpl.CloseAgentStateChangeFeed()
-
-		sup, err := supervisor.New(
-			supImpl,
-			config.Supervisor.Workspace,
-			config.Supervisor.MongoDbUrl,
-			config.Supervisor.Token,
-			logger)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			log.Println("Waiting for the agents to terminate...")
-			sup.Terminate()
-			log.Println("Agents terminated")
-		}()
-
-		// Export Meeko management calls.
-		if err := sup.ExportManagementMethods(inprocClient); err != nil {
-			return err
-		}
-	}
+	dmn.Monitor(monitorCh)
 
 	// Loop until interrupted.
-Loop:
 	for {
 		select {
-		case err, ok := <-monitorCh:
+		case report, ok := <-monitorCh:
+			if report != nil && report.Dropped {
+				log.Printf("Endpoint %v dropped", report.FactoryId)
+				return report.Error
+			}
 			if !ok {
-				break Loop
+				return nil
 			}
-			log.Printf("Endpoint %v crashed with error=%v\n", err.FactoryId, err.Error)
-			if err.Dropped {
-				log.Printf("Endpoint %v dropped", err.FactoryId)
-			}
+			log.Printf("Endpoint %v crashed with error=%v\n", report.FactoryId, report.Error)
+
 		case sig := <-signalCh:
-			log.Printf("Signal received (%v), terminating...", sig)
-			break Loop
+			log.Printf("Signal received (%v), terminating...\n", sig)
+			return nil
 		}
 	}
 
@@ -263,7 +121,7 @@ DESCRIPTION:
 ENVIRONMENT:
   MEEKOD_CONFIG
   MEEKOD_DISABLE_SUPERVISOR
-  MEEKOD_DISABLE_ZMQ
+  MEEKOD_DISABLE_LOCAL_ENDPOINTS
   MEEKOD_VERBOSE
 
   The meaning of these environment variables is the same as their flag
