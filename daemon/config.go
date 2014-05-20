@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v1"
 )
@@ -29,8 +30,9 @@ type Config struct {
 			RPC *struct {
 				ZeroMQ    string `yaml:"zeromq"`
 				WebSocket *struct {
-					Address string
-					Token   string
+					Address         string
+					Token           string
+					HeartbeatPeriod time.Duration `yaml:"heartbeat_period"`
 				} `yaml:"websocket"`
 			} `yaml:"rpc"`
 		}

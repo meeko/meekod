@@ -180,6 +180,7 @@ func (daemon *Daemon) Serve() error {
 			}
 			return nil
 		}
+		cfg.HeartbeatPeriod = config.Broker.Endpoints.RPC.WebSocket.HeartbeatPeriod
 		return wsrpc.NewEndpoint(cfg, balancer)
 	})
 

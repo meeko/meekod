@@ -9,8 +9,9 @@ broker:
     rpc:
       zeromq: "ipc:///tmp/meeko/rpc.ipc"
       websocket:
-        address: "localhost:1234"
-        token:   "secret"
+        address:          "localhost:1234"
+        token:            "secret"
+        heartbeat_period: "30s"
 supervisor:
   workspace:   "/tmp/meeko/workspace"
   mongodb_url: "localhost"
