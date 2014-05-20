@@ -157,7 +157,7 @@ func (cfg *Config) PopulateEnviron() error {
 	return os.Setenv("MEEKO_ZMQ3_RPC_ENDPOINT", cfg.Broker.Endpoints.RPC.ZeroMQ)
 }
 
-func readConfig(path string) (*Config, error) {
+func ReadConfigFile(path string) (*Config, error) {
 	content, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err

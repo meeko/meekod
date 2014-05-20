@@ -10,7 +10,6 @@ package daemon
 import (
 	// Stdlib
 	"errors"
-	"io/ioutil"
 	"net/http"
 
 	// Meeko broker
@@ -35,7 +34,6 @@ import (
 	ws "code.google.com/p/go.net/websocket"
 	log "github.com/cihub/seelog"
 	zmq "github.com/pebbe/zmq3"
-	"gopkg.in/yaml.v1"
 )
 
 var ErrTerminated = errors.New("daemon already terminated")
@@ -88,13 +86,8 @@ func NewFromConfigAsFile(path string, opts *Options) (*Daemon, error) {
 		return nil, errors.New("meekod configuration file path is empty")
 	}
 
-	content, err := ioutil.ReadFile(path)
+	config, err := ReadConfigFile(path)
 	if err != nil {
-		return nil, err
-	}
-
-	config := new(Config)
-	if err := yaml.Unmarshal(content, config); err != nil {
 		return nil, err
 	}
 
