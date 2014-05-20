@@ -25,7 +25,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalln("Error: ", err)
+		log.Fatalln("\nError:", err)
 	}
 }
 
@@ -57,6 +57,7 @@ func run() error {
 		defer broklog.Flush()
 	} else {
 		seelog.ReplaceLogger(seelog.Disabled)
+		defer seelog.Flush()
 	}
 
 	// Create a daemon instance from the specified config file.
@@ -67,7 +68,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer dmn.Terminate()
+	defer func() {
+		dmn.Terminate()
+		log.Println("The background thread terminated")
+	}()
 
 	// Start catching signals.
 	signalCh := make(chan os.Signal, 1)
@@ -77,21 +81,30 @@ func run() error {
 	monitorCh := make(chan *broker.EndpointCrashReport)
 	dmn.Monitor(monitorCh)
 
+	// Start the daemon.
+	log.Println("Starting the background thread")
+	dmnErrorCh := make(chan error, 1)
+	go func() {
+		dmnErrorCh <- dmn.Serve()
+	}()
+
 	// Loop until interrupted.
 	for {
 		select {
 		case report, ok := <-monitorCh:
-			if report != nil && report.Dropped {
-				log.Printf("Endpoint %v dropped", report.FactoryId)
-				return report.Error
-			}
 			if !ok {
-				return nil
+				continue
 			}
-			log.Printf("Endpoint %v crashed with error=%v\n", report.FactoryId, report.Error)
+			if report.Dropped {
+				return fmt.Errorf("Endpoint %v dropped", report.FactoryId)
+			}
+			log.Printf("Endpoint %v crashed: %v\n", report.FactoryId, report.Error)
 
-		case sig := <-signalCh:
-			log.Printf("Signal received (%v), terminating...\n", sig)
+		case err := <-dmnErrorCh:
+			return err
+
+		case <-signalCh:
+			log.Println("Signal received, terminating...")
 			return nil
 		}
 	}
