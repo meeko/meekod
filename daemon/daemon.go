@@ -229,6 +229,17 @@ func (daemon *Daemon) Serve() error {
 
 	// Start the service endpoints.
 	brookr.ListenAndServe()
+	go func() {
+		select {
+		case <-brookr.Terminated():
+			select {
+			case <-daemon.termCh:
+			default:
+				close(daemon.termCh)
+			}
+		case <-daemon.termCh:
+		}
+	}()
 
 	// Wait for the termination signal, then terminate everything.
 	<-daemon.termCh
