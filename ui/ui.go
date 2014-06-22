@@ -71,8 +71,9 @@ func (web *UI) handleServicesRPC(w http.ResponseWriter, r *http.Request) {
     <table>
 	{{range $agent, $methods := .}}
 	  <tr><td>{{$agent}}</td><td></td></tr>
-	  {{range $methods}}
-	  <tr><td></td><td>{{.}}</td></tr>
+	  {{range $method, $foo := $methods}}
+	  <tr><td></td><td>{{$method}}</td></tr>
+	  {{end}}
 	{{end}}
 	</table>
   </body>
