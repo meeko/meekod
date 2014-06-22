@@ -30,6 +30,7 @@ func (web *UI) WrapRpcExchange(exchange rpc.Exchange) rpc.Exchange {
 
 func (web *UI) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", web.handleServicesRPC)
 	mux.HandleFunc("/services/rpc", web.handleServicesRPC)
 
 	listener, err := net.Listen("tcp", addr)
@@ -68,7 +69,11 @@ func (web *UI) handleServicesRPC(w http.ResponseWriter, r *http.Request) {
 <html>
   <body>
     <table>
-	{{range .}}<tr><td>{{.}}</td></tr>{{end}}
+	{{range $agent, $methods := .}}
+	  <tr><td>{{$agent}}</td><td></td></tr>
+	  {{range $methods}}
+	  <tr><td></td><td>{{.}}</td></tr>
+	{{end}}
 	</table>
   </body>
 </html>
