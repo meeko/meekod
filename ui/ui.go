@@ -6,13 +6,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/meeko/meekod/broker/services/rpc"
 )
 
 type UI struct {
+	mu       *sync.Mutex
 	listener net.Listener
 	rpc      *rpcMiddleware
+}
+
+func New() *UI {
+	return &UI{
+		mu: new(sync.Mutex),
+	}
 }
 
 func (web *UI) WrapRpcExchange(exchange rpc.Exchange) rpc.Exchange {
@@ -30,10 +38,18 @@ func (web *UI) ListenAndServe(addr string) error {
 	}
 	web.listener = listener
 
-	return http.Serve(listener, mux)
+	err = http.Serve(listener, mux)
+	web.mu.Lock()
+	defer web.mu.Unlock()
+	if web.listener == nil {
+		return nil
+	}
+	return err
 }
 
 func (web *UI) Close() error {
+	web.mu.Lock()
+	defer web.mu.Unlock()
 	if web.listener != nil {
 		listener := web.listener
 		web.listener = nil

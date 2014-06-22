@@ -30,6 +30,9 @@ import (
 	"github.com/meeko/meekod/supervisor"
 	"github.com/meeko/meekod/supervisor/implementations/exec"
 
+	// Meeko UI
+	"github.com/meeko/meekod/ui"
+
 	// Others
 	ws "code.google.com/p/go.net/websocket"
 	log "github.com/cihub/seelog"
@@ -150,6 +153,13 @@ func (daemon *Daemon) Serve() (err error) {
 		balancer = roundrobin.NewBalancer()
 	)
 
+	// Activate UI if desired.
+	var web *ui.UI
+	if config.UI.Bind != "" {
+		web = ui.New()
+		balancer = web.WrapRpcExchange(balancer)
+	}
+
 	// Register a special inproc service endpoint.
 	var inprocClient *rpc_client.Service
 	if !daemon.opts.DisableSupervisor {
@@ -255,8 +265,22 @@ func (daemon *Daemon) Serve() (err error) {
 		}
 	}()
 
+	// Start the UI if desired.
+	if web != nil {
+		go func() {
+			log.Infof("Web UI being bound to address %v", config.UI.Bind)
+			if err := web.ListenAndServe(config.UI.Bind); err != nil {
+				log.Critical(err)
+				daemon.Terminate()
+			}
+		}()
+	}
+
 	// Wait for the termination signal, then terminate everything.
 	<-daemon.termCh
+	if web != nil {
+		web.Close()
+	}
 	if sup != nil {
 		sup.Terminate()
 	}
