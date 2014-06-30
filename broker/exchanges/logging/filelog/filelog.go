@@ -1,9 +1,9 @@
-// Copyright (c) 2013 The meeko AUTHORS
+// Copyright (c) 2013-2014 The meeko AUTHORS
 //
 // Use of this source code is governed by The MIT License
 // that can be found in the LICENSE file.
 
-package seelog
+package filelog
 
 import (
 	"bytes"
@@ -29,7 +29,7 @@ type FileLogger struct {
 	mu      *sync.Mutex
 }
 
-func NewFileLogger(directory string) (*FileLogger, error) {
+func New(directory string) (*FileLogger, error) {
 	// Make sure that directory is a directory.
 	info, err := os.Lstat(directory)
 	if err != nil {
@@ -122,6 +122,12 @@ func (logger *FileLogger) getOrCreateLogger(agent string) seelog.LoggerInterface
 		logger.loggers[agent] = log
 	}
 	return log
+}
+
+// Helpers ---------------------------------------------------------------------
+
+func createDir(path string) error {
+	return os.MkdirAll(path, 0750)
 }
 
 // Errors ----------------------------------------------------------------------

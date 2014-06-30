@@ -14,9 +14,12 @@ import (
 
 	// Meeko broker
 	"github.com/meeko/meekod/broker"
+	"github.com/meeko/meekod/broker/exchanges/logging/filelog"
+	"github.com/meeko/meekod/broker/exchanges/logging/multilog"
 	"github.com/meeko/meekod/broker/exchanges/logging/publisher"
 	"github.com/meeko/meekod/broker/exchanges/pubsub/eventbus"
 	"github.com/meeko/meekod/broker/exchanges/rpc/roundrobin"
+	"github.com/meeko/meekod/broker/services/logging"
 	wsrpc "github.com/meeko/meekod/broker/transports/websocket/rpc"
 	zlogging "github.com/meeko/meekod/broker/transports/zmq3/logging"
 	zpubsub "github.com/meeko/meekod/broker/transports/zmq3/pubsub"
@@ -145,10 +148,24 @@ func (daemon *Daemon) Serve() (err error) {
 
 	// Prepare the service exchanges.
 	var (
-		logger   = publisher.New()
-		pubsub   = eventbus.New()
-		balancer = roundrobin.NewBalancer()
+		logPublisher                  = publisher.New()
+		logger       logging.Exchange = logPublisher
+		pubsub                        = eventbus.New()
+		balancer                      = roundrobin.NewBalancer()
 	)
+
+	// Enable logging to files if desired.
+	if daemon.config.Logging != nil && daemon.config.Logging.Directory != "" {
+		dir := daemon.config.Logging.Directory
+		log.Infof("FileLogger enabled, using directory %v", dir)
+		fileLog, err := filelog.New(dir)
+		if err != nil {
+			return err
+		}
+
+		// Replace the logger with multilog.
+		logger = multilog.New(logPublisher, fileLog)
+	}
 
 	// Register a special inproc service endpoint.
 	var inprocClient *rpc_client.Service
@@ -231,7 +248,7 @@ func (daemon *Daemon) Serve() (err error) {
 			config.Supervisor.Workspace,
 			config.Supervisor.MongoDbUrl,
 			config.Supervisor.Token,
-			logger)
+			logPublisher)
 		if err != nil {
 			return err
 		}

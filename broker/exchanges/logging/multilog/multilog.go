@@ -18,7 +18,7 @@ type MultiLogger struct {
 }
 
 func New(exchange ...logging.Exchange) *MultiLogger {
-	return
+	return &MultiLogger{exchange}
 }
 
 func (log *MultiLogger) Log(agent string, level logging.Level, message []byte) error {

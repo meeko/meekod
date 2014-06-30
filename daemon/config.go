@@ -42,6 +42,9 @@ type Config struct {
 		MongoDbUrl string `yaml:"mongodb_url"`
 		Token      string
 	}
+	Logging *struct {
+		Directory string `yaml:"directory"`
+	}
 }
 
 func (cfg *Config) ensureCommonConfig() error {
